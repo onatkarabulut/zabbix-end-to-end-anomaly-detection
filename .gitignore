@@ -1,2 +1,3 @@
 zabbix-pg-data/
+minio-data/
 .env
