@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  postgres-server:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix_sifresi
+      - POSTGRES_DB=zabbix
+    volumes:
+      - ./zabbix-pg-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:latest
+    depends_on:
+      - postgres-server
+    environment:
+      - DB_SERVER_HOST=postgres-server
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix_sifresi
+      - POSTGRES_DB=zabbix
+    ports:
+      - "10051:10051"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:latest
+    depends_on:
+      - postgres-server
+      - zabbix-server
+    environment:
+      - DB_SERVER_HOST=postgres-server
+      - POSTGRES_USER=zabbix
+      - POSTGRES_PASSWORD=zabbix_sifresi
+      - POSTGRES_DB=zabbix
+      - ZBX_SERVER_HOST=zabbix-server
+      - PHP_TZ=Europe/Istanbul
+    ports:
+      - "8080:8080"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent:latest
+    environment:
+      - ZBX_SERVER_HOST=zabbix-server
+      - ZBX_HOSTNAME=Zabbix server
+    pid: "host"
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /dev/disk:/dev/disk:ro
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    depends_on:
+      - postgres-server
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@example.com
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+    ports:
+      - "5050:80"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./minio-data:/data
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+networks:
+  zabbix-net:
+    driver: bridge
