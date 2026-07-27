@@ -11,6 +11,7 @@ sys.path.insert(0, '/opt/airflow')
 from ETL.extract import run_extraction_pipeline
 from ETL.transform import run_transform_pipeline
 from ETL.load import run_load_pipeline
+from ETL.feature_engineering import run_feature_engineering
 
 logger = logging.getLogger("airflow.task")
 
@@ -31,7 +32,7 @@ default_args = {
     start_date=pendulum.now("UTC").subtract(days=2),
     catchup=True,
     max_active_runs=4,
-    tags=['zabbix', 'machine-learning', 'etl', 'faz-1']
+    tags=['zabbix', 'machine-learning', 'etl', 'faz-2']
 )
 def zabbix_etl_dag():
 
@@ -77,13 +78,24 @@ def zabbix_etl_dag():
         return chunk_id
 
     @task(task_id='load_to_sqlite_warehouse')
-    def load_task(chunk_id: str):
+    def load_task(chunk_id: str) -> str:
         if not run_load_pipeline(chunk_id):
             raise AirflowException(f"Load basarisiz: {chunk_id}")
+        return chunk_id
+
+    @task(task_id='feature_engineering')
+    def fe_task(chunk_id: str):
+        db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+        parts = chunk_id.split("_")
+        target_start = int(parts[1])
+        target_end = int(parts[2])
+        if not run_feature_engineering(db_path, target_start=target_start, target_end=target_end):
+            raise AirflowException("Feature engineering basarisiz")
 
     chunk = extract_task()
     validated_chunk = validate_task(chunk)
     transformed_chunk = transform_task(validated_chunk)
-    load_task(transformed_chunk)
+    loaded_chunk = load_task(transformed_chunk)
+    fe_task(loaded_chunk)
 
 pipeline = zabbix_etl_dag()
