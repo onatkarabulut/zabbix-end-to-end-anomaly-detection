@@ -40,23 +40,37 @@ class ZabbixLoader:
         if df is None or df.empty:
             return False
 
+        staging_table = f"{table_name}_staging"
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                min_time = df['datetime_minute'].min()
-                max_time = df['datetime_minute'].max()
+                cursor.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        datetime_minute TIMESTAMP,
+                        host TEXT,
+                        cpu_usage REAL,
+                        memory_usage REAL,
+                        PRIMARY KEY (host, datetime_minute)
+                    )
+                """)
+
+                df.to_sql(staging_table, conn, if_exists='replace', index=False)
                 
-                delete_query = f"DELETE FROM {table_name} WHERE datetime_minute >= ? AND datetime_minute <= ?"
-                cursor.execute(delete_query, (min_time, max_time))
+                cursor.execute(f"""
+                    INSERT OR REPLACE INTO {table_name}
+                    SELECT * FROM {staging_table}
+                """)
                 
-                df.to_sql(table_name, conn, if_exists='append', index=False)
+                cursor.execute(f"DROP TABLE {staging_table}")
                 
-            logging.info(f"Load basarili: {len(df)} satir SQLite '{table_name}' tablosuna eklendi.")
+            logging.info(f"Load basarili: {len(df)} satir UPSERT ile '{table_name}' tablosuna islendi.")
             return True
+            
         except Exception as e:
             logging.error(f"SQLite Yazma Hatasi: {e}")
-            return False    
+            return False
         
         
 def run_load_pipeline(chunk_id: str):
