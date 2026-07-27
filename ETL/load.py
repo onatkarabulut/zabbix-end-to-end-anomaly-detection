@@ -42,13 +42,23 @@ class ZabbixLoader:
 
         try:
             with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                min_time = df['datetime_minute'].min()
+                max_time = df['datetime_minute'].max()
+                
+                delete_query = f"DELETE FROM {table_name} WHERE datetime_minute >= ? AND datetime_minute <= ?"
+                cursor.execute(delete_query, (min_time, max_time))
+                
                 df.to_sql(table_name, conn, if_exists='append', index=False)
+                
             logging.info(f"Load basarili: {len(df)} satir SQLite '{table_name}' tablosuna eklendi.")
             return True
         except Exception as e:
             logging.error(f"SQLite Yazma Hatasi: {e}")
-            return False
-
+            return False    
+        
+        
 def run_load_pipeline(chunk_id: str):
     loader = ZabbixLoader(
         minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
