@@ -11,13 +11,11 @@ class ZabbixTransformer:
     def __init__(self, minio_endpoint, minio_access_key, minio_secret_key, raw_bucket="zabbix-raw-data", processed_bucket="zabbix-processed-data"):
         self.raw_bucket = raw_bucket
         self.processed_bucket = processed_bucket
-        
         self.storage_options = {
             "client_kwargs": {"endpoint_url": minio_endpoint},
             "key": minio_access_key,
             "secret": minio_secret_key
         }
-        
         self.s3_client = boto3.client(
             's3',
             endpoint_url=minio_endpoint,
@@ -34,18 +32,33 @@ class ZabbixTransformer:
         except Exception:
             self.s3_client.create_bucket(Bucket=self.processed_bucket)
 
+    def _s3_key_exists(self, bucket, file_key):
+        try:
+            self.s3_client.head_object(Bucket=bucket, Key=file_key)
+            return True
+        except Exception:
+            return False
+
     def read_parquet_from_minio(self, file_key):
         s3_path = f"s3://{self.raw_bucket}/{file_key}"
         try:
             return pd.read_parquet(s3_path, storage_options=self.storage_options)
         except Exception as e:
-            logging.error(f"Okuma Hatasi ({file_key}): {e}")
+            logging.warning(f"Okunamadi ({file_key}): {e}")
             return None
 
     def build_feature_matrix(self, chunk_id):
-        df_hist = self.read_parquet_from_minio(f"history/{chunk_id}.parquet")
-        df_items = self.read_parquet_from_minio("items/latest_items.parquet")
-        df_hosts = self.read_parquet_from_minio("hosts/latest_hosts.parquet")
+        history_key = f"history/{chunk_id}.parquet"
+        items_key = "items/latest_items.parquet"
+        hosts_key = "hosts/latest_hosts.parquet"
+
+        if not self._s3_key_exists(self.raw_bucket, history_key):
+            logging.warning(f"History verisi yok Minio'da: {history_key}")
+            return None
+
+        df_hist = self.read_parquet_from_minio(history_key)
+        df_items = self.read_parquet_from_minio(items_key)
+        df_hosts = self.read_parquet_from_minio(hosts_key)
 
         if any(df is None or df.empty for df in [df_hist, df_items, df_hosts]):
             return None
@@ -57,17 +70,15 @@ class ZabbixTransformer:
         df_merged['datetime_minute'] = df_merged['datetime'].dt.floor('min')
 
         df_pivot = pd.pivot_table(
-            df_merged, 
-            index=['datetime_minute', 'host'], 
-            columns='key_', 
-            values='value', 
+            df_merged,
+            index=['datetime_minute', 'host'],
+            columns='key_',
+            values='value',
             aggfunc='mean'
         ).reset_index()
 
         df_pivot.columns.name = None
-        
         df_pivot = df_pivot.sort_values(by=['host', 'datetime_minute'])
-        
         df_pivot = df_pivot.groupby('host').apply(lambda x: x.ffill(limit=3)).reset_index(drop=True)
         df_pivot = df_pivot.dropna(thresh=int(len(df_pivot.columns) * 0.7))
 
@@ -76,29 +87,30 @@ class ZabbixTransformer:
     def save_processed_data(self, df, chunk_id):
         if df is None or df.empty:
             return False
-
         s3_path = f"s3://{self.processed_bucket}/features/{chunk_id}_features.parquet"
         try:
             df.to_parquet(s3_path, index=False, storage_options=self.storage_options, compression="snappy")
-            logging.info(f"Transform basarili: {s3_path}")
+            logging.info(f"Transform basarili: {s3_path} ({len(df)} satir)")
             return True
         except Exception as e:
             logging.error(f"Yazma Hatasi: {e}")
             return False
 
-def run_transform_pipeline(chunk_id: str):
+
+def run_transform_pipeline(chunk_id: str) -> bool:
     transformer = ZabbixTransformer(
         minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
         minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123")
     )
     feature_matrix = transformer.build_feature_matrix(chunk_id)
-    transformer.save_processed_data(feature_matrix, chunk_id)
+    return transformer.save_processed_data(feature_matrix, chunk_id)
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         chunk_param = sys.argv[1]
-        run_transform_pipeline(chunk_param)
+        success = run_transform_pipeline(chunk_param)
+        logging.info(f"Transform {'basarili' if success else 'basarisiz'}: {chunk_param}")
     else:
         logging.warning("Lutfen terminalden parametre olarak bir chunk_id giriniz.")

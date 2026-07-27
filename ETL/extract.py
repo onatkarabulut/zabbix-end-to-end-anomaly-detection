@@ -3,7 +3,7 @@ import os
 import logging
 import psycopg2
 import pandas as pd
-from datetime import datetime
+import pendulum
 import boto3
 from botocore.client import Config
 from colorama import Fore, Style, init
@@ -18,8 +18,7 @@ class ZabbixExtractor:
         self.pg_pass = pg_pass
         self.pg_db = pg_db
         self.bucket_name = bucket_name
-        self.timeout_ms = 5000
-        
+        self.timeout_ms = int(os.getenv("EXTRACT_TIMEOUT_MS", "15000"))
         self.s3_client = boto3.client(
             's3',
             endpoint_url=minio_endpoint,
@@ -51,43 +50,37 @@ class ZabbixExtractor:
                     cur.execute(f"SET statement_timeout = {self.timeout_ms};")
                     cur.execute(query)
                     rows = cur.fetchall()
-                    
                     if not rows:
+                        logging.warning(f"{description_prefix} icin {self.timeout_ms}ms icinde kayit bulunamadi.")
                         return None
-                        
                     cols = [desc[0] for desc in cur.description]
                     return pd.DataFrame(rows, columns=cols)
-                    
         except psycopg2.errors.QueryCanceled:
-            logging.error(f"{description_prefix} ZORLA DURDURULDU (Timeout).")
+            logging.error(f"{description_prefix} ZORLA DURDURULDU (Timeout - {self.timeout_ms}ms asildi).")
             raise
         except Exception as e:
-            logging.error(f"Hata: {e}")
+            logging.error(f"PostgreSQL Baglanti/Sorgu Hatasi: {e}")
             raise
 
     def push_to_minio(self, df, table_category, chunk_identifier):
         if df is None or df.empty:
             return False
-
         try:
             buffer = io.BytesIO()
             df.to_parquet(buffer, index=False, compression="snappy")
             buffer.seek(0)
-            
             file_key = f"{table_category}/{chunk_identifier}.parquet"
-            
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=file_key,
                 Body=buffer.getvalue(),
                 ContentType="application/octet-stream"
             )
-            logging.info(f"{Fore.GREEN}Minio'ya yüklendi: {file_key}{Style.RESET_ALL}")
+            logging.info(f"{Fore.GREEN}Minio'ya yuklendi: {file_key}{Style.RESET_ALL}")
             return True
-            
         except Exception as e:
-            logging.error(f"Minio yükleme hatası: {e}")
-            return False
+            logging.error(f"Minio Yukleme Hatasi (Key: {table_category}/{chunk_identifier}): {e}")
+            raise
 
     def extract_history_chunk(self, start_ts, end_ts):
         query = f"SELECT itemid, clock, value, ns FROM history WHERE clock >= {start_ts} AND clock < {end_ts}"
@@ -104,7 +97,7 @@ class ZabbixExtractor:
     def extract_problems_chunk(self, start_ts, end_ts):
         query = f"SELECT eventid, objectid, clock, r_eventid, r_clock, name, severity FROM problem WHERE clock >= {start_ts} AND clock < {end_ts}"
         return self._execute_query_to_df(query, "problem")
-    
+
     def extract_hosts(self):
         query = "SELECT hostid, host, name, status FROM hosts WHERE status IN (0, 1)"
         return self._execute_query_to_df(query, "hosts")
@@ -114,7 +107,11 @@ class ZabbixExtractor:
         return self._execute_query_to_df(query, "items")
 
 
-def run_extraction_pipeline(start_ts: int, end_ts: int):
+def run_extraction_pipeline(start_ts: int, end_ts: int) -> bool:
+    start_str = pendulum.from_timestamp(start_ts).to_datetime_string()
+    end_str = pendulum.from_timestamp(end_ts).to_datetime_string()
+    logging.info(f"Extract basladi: {start_ts} ({start_str}) -> {end_ts} ({end_str})")
+
     extractor = ZabbixExtractor(
         pg_host=os.getenv("DB_HOST", "localhost"),
         pg_user=os.getenv("DB_USER", "zabbix"),
@@ -124,28 +121,44 @@ def run_extraction_pipeline(start_ts: int, end_ts: int):
         minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123")
     )
-    
+
     chunk_id = f"chunk_{start_ts}_{end_ts}"
-    
+
     tables = [
         ("history", extractor.extract_history_chunk),
         ("trends", extractor.extract_trends_chunk),
         ("events", extractor.extract_events_chunk),
         ("problem", extractor.extract_problems_chunk)
     ]
-    
+
+    data_found = False
     for table_name, extract_func in tables:
-        df = extract_func(start_ts, end_ts)
-        extractor.push_to_minio(df, table_name, chunk_id)
-        
-    df_hosts = extractor.extract_hosts()
-    extractor.push_to_minio(df_hosts, "hosts", "latest_hosts")
-    
-    df_items = extractor.extract_items()
-    extractor.push_to_minio(df_items, "items", "latest_items")
+        try:
+            df = extract_func(start_ts, end_ts)
+            if df is not None and not df.empty:
+                logging.info(f"{table_name}: {len(df)} kayit bulundu.")
+            success = extractor.push_to_minio(df, table_name, chunk_id)
+            if success:
+                data_found = True
+        except Exception as e:
+            logging.warning(f"{table_name} extract hatasi (ignored): {e}")
+
+    if not data_found:
+        logging.warning(f"{start_ts} - {end_ts} araliginda veri bulunamadi.")
+        return False
+
+    try:
+        df_hosts = extractor.extract_hosts()
+        extractor.push_to_minio(df_hosts, "hosts", "latest_hosts")
+        df_items = extractor.extract_items()
+        extractor.push_to_minio(df_items, "items", "latest_items")
+    except Exception as e:
+        logging.warning(f"Hosts/Items extract hatasi (ignored): {e}")
+
+    return True
 
 
 if __name__ == "__main__":
-    now = int(datetime.now().timestamp())
+    now = int(pendulum.now('UTC').timestamp())
     one_hour_ago = now - 3600
     run_extraction_pipeline(start_ts=one_hour_ago, end_ts=now)

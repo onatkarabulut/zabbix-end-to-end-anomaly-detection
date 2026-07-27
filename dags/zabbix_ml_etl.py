@@ -1,8 +1,10 @@
+import os
 import sys
 import logging
-from datetime import datetime, timedelta
+import pendulum
+from datetime import timedelta
 from airflow.decorators import dag, task
-from airflow.exceptions import AirflowException
+from airflow.exceptions import AirflowException, AirflowSkipException
 
 sys.path.insert(0, '/opt/airflow')
 
@@ -11,6 +13,9 @@ from ETL.transform import run_transform_pipeline
 from ETL.load import run_load_pipeline
 
 logger = logging.getLogger("airflow.task")
+
+LOCAL_TZ = pendulum.timezone("Europe/Istanbul")
+MAX_BACKFILL_HOURS = int(os.getenv("MAX_BACKFILL_HOURS", "720"))
 
 default_args = {
     'owner': 'data-engineer',
@@ -22,48 +27,59 @@ default_args = {
 @dag(
     dag_id='zabbix_ml_pipeline',
     default_args=default_args,
-    description='Zabbix metriklerini detayli adimlarla ML feature matrisine cevirir',
     schedule='@hourly',
-    start_date=datetime(2026, 7, 22),
-    catchup=False,
+    start_date=pendulum.now("UTC").subtract(days=2),
+    catchup=True,
+    max_active_runs=4,
     tags=['zabbix', 'machine-learning', 'etl', 'faz-1']
 )
 def zabbix_etl_dag():
 
     @task(task_id='extract_zabbix_data')
     def extract_task(data_interval_start=None, data_interval_end=None) -> str:
-        start_ts = int(data_interval_start.timestamp())
-        end_ts = int(data_interval_end.timestamp())
-        logger.info(f"==== EXTRACT BASLADI: {start_ts} -> {end_ts} ====")
+        start_local = data_interval_start.in_timezone(LOCAL_TZ)
+        now_utc = pendulum.now('UTC')
+        time_diff = now_utc - data_interval_start
+
+        if time_diff.total_hours() > MAX_BACKFILL_HOURS:
+            raise AirflowSkipException(
+                f"Geriye donuk tarama limiti ({MAX_BACKFILL_HOURS} saat). "
+                f"Atlaniyor: {start_local.format('YYYY-MM-DD HH:mm')}"
+            )
+
+        raw_start = int(data_interval_start.timestamp())
+        raw_end = int(data_interval_end.timestamp())
+        hour_start = (raw_start // 3600) * 3600
+        start_ts = hour_start
+        end_ts = hour_start + 3600
+        chunk_id = f"chunk_{start_ts}_{end_ts}"
+
         try:
-            run_extraction_pipeline(start_ts, end_ts)
-            chunk_id = f"chunk_{start_ts}_{end_ts}"
+            has_data = run_extraction_pipeline(start_ts, end_ts)
+            if not has_data:
+                raise AirflowSkipException(
+                    f"Veri yok: {start_local.format('YYYY-MM-DD HH:mm')}"
+                )
             return chunk_id
+        except AirflowSkipException:
+            raise
         except Exception as e:
             raise AirflowException(f"Extract failed: {e}")
 
     @task(task_id='validate_raw_parquet')
     def validate_task(chunk_id: str) -> str:
-        logger.info(f"==== RAW VERI DOGRULAMA: {chunk_id} ====")
         return chunk_id
 
     @task(task_id='transform_to_feature_matrix')
     def transform_task(chunk_id: str) -> str:
-        logger.info(f"==== TRANSFORM (FEATURE ENGINEERING) BASLADI: {chunk_id} ====")
-        try:
-            run_transform_pipeline(chunk_id)
-            return chunk_id
-        except Exception as e:
-            raise AirflowException(f"Transform failed: {e}")
+        if not run_transform_pipeline(chunk_id):
+            raise AirflowException(f"Transform basarisiz: {chunk_id}")
+        return chunk_id
 
     @task(task_id='load_to_sqlite_warehouse')
     def load_task(chunk_id: str):
-        logger.info(f"==== LOAD (SQLITE) BASLADI: {chunk_id} ====")
-        try:
-            run_load_pipeline(chunk_id)
-            logger.info("Load islemi basariyla tamamlandi.")
-        except Exception as e:
-            raise AirflowException(f"Load failed: {e}")
+        if not run_load_pipeline(chunk_id):
+            raise AirflowException(f"Load basarisiz: {chunk_id}")
 
     chunk = extract_task()
     validated_chunk = validate_task(chunk)
