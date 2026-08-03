@@ -60,4 +60,4 @@ _3._ Kısa bir mimari diyagramı: Zabbix **→** ETL **→** model **→** geri 
 - Kod kalitesi
 - • Veri sızıntısı olmadan do**ğ**ru de**ğ**erlendirme yapılmı**ş** mı
 - Production veritabanına yük bindirmeme konusunda gerçekçi önlemler var mı
-- • Modelin ba**ş**arısız oldu**ğ**u durumlar dürüstçe raporlanmı**ş** mı
+- • Modelin ba**ş**arısız oldu**ğ**u durumlar dürüstçe raporlanmı**ş** 

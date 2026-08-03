@@ -21,7 +21,12 @@ class ZabbixTransformer:
             endpoint_url=minio_endpoint,
             aws_access_key_id=minio_access_key,
             aws_secret_access_key=minio_secret_key,
-            config=Config(signature_version='s3v4'),
+            config=Config(
+                signature_version='s3v4',
+                connect_timeout=30,
+                read_timeout=60,
+                retries={'max_attempts': 2}
+            ),
             region_name='us-east-1'
         )
         self._ensure_processed_bucket()
@@ -49,6 +54,7 @@ class ZabbixTransformer:
 
     def build_feature_matrix(self, chunk_id):
         history_key = f"history/{chunk_id}.parquet"
+        trends_key = f"trends/{chunk_id}.parquet"
         items_key = "items/latest_items.parquet"
         hosts_key = "hosts/latest_hosts.parquet"
 
@@ -79,6 +85,36 @@ class ZabbixTransformer:
 
         df_pivot.columns.name = None
         df_pivot = df_pivot.sort_values(by=['host', 'datetime_minute'])
+
+        df_trends = self.read_parquet_from_minio(trends_key)
+        if df_trends is not None and not df_trends.empty:
+            df_trends = pd.merge(df_trends, df_items[['itemid', 'hostid', 'key_']], on='itemid', how='inner')
+            df_trends['datetime_hour'] = pd.to_datetime(df_trends['clock'], unit='s').dt.floor('h')
+
+            for suffix, col in [('_hourly_avg', 'value_avg'), ('_hourly_min', 'value_min'), ('_hourly_max', 'value_max')]:
+                trend_pivot = df_trends.pivot_table(
+                    index=['datetime_hour', 'hostid'],
+                    columns='key_',
+                    values=col,
+                    aggfunc='mean'
+                ).reset_index()
+
+                rename_cols = {
+                    c: f"{c}{suffix}"
+                    for c in trend_pivot.columns
+                    if c not in ('datetime_hour', 'hostid')
+                }
+                trend_pivot = trend_pivot.rename(columns=rename_cols)
+                trend_pivot = pd.merge(trend_pivot, df_hosts[['hostid', 'host']], on='hostid', how='inner')
+                trend_pivot = trend_pivot.drop(columns=['hostid'])
+
+                df_pivot['datetime_hour'] = df_pivot['datetime_minute'].dt.floor('h')
+                df_pivot = pd.merge(df_pivot, trend_pivot, on=['datetime_hour', 'host'], how='left')
+                df_pivot = df_pivot.drop(columns=['datetime_hour'])
+
+            logging.info(f"Trends verisi eklendi: {chunk_id}")
+
+        df_pivot = df_pivot.drop_duplicates(subset=['host', 'datetime_minute'])
         df_pivot = df_pivot.groupby('host').apply(lambda x: x.ffill(limit=3)).reset_index(drop=True)
         df_pivot = df_pivot.dropna(thresh=int(len(df_pivot.columns) * 0.7))
 

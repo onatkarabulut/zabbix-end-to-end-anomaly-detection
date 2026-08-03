@@ -39,8 +39,9 @@ def _mark_chunk_processed(chunk_id: str, row_count: int, db_path: str):
 
 
 class ZabbixLoader:
-    def __init__(self, minio_endpoint, minio_access_key, minio_secret_key, db_path="zabbix_ml.db", processed_bucket="zabbix-processed-data"):
+    def __init__(self, minio_endpoint, minio_access_key, minio_secret_key, db_path="zabbix_ml.db", processed_bucket="zabbix-processed-data", raw_bucket="zabbix-raw-data"):
         self.processed_bucket = processed_bucket
+        self.raw_bucket = raw_bucket
         self.db_path = db_path
         self.storage_options = {
             "client_kwargs": {"endpoint_url": minio_endpoint},
@@ -52,7 +53,12 @@ class ZabbixLoader:
             endpoint_url=minio_endpoint,
             aws_access_key_id=minio_access_key,
             aws_secret_access_key=minio_secret_key,
-            config=Config(signature_version='s3v4'),
+            config=Config(
+                signature_version='s3v4',
+                connect_timeout=30,
+                read_timeout=60,
+                retries={'max_attempts': 2}
+            ),
             region_name='us-east-1'
         )
 
@@ -63,6 +69,80 @@ class ZabbixLoader:
         except Exception as e:
             logging.warning(f"Minio'da islenmis veri yok ({chunk_id}): {e}")
             return None
+
+    def _list_raw_objects(self, prefix):
+        keys = []
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.raw_bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                if obj["Key"].endswith(".parquet"):
+                    keys.append(obj["Key"])
+        return sorted(keys)
+
+    def _coerce_epoch(self, series):
+        if pd.api.types.is_integer_dtype(series.dtype) or pd.api.types.is_float_dtype(series.dtype):
+            return series.astype("float64")
+        dt = pd.to_datetime(series, errors="coerce")
+        return dt.astype("int64").floordiv(10**9)
+
+    def _normalize_raw(self, df, pk_col, epoch_cols=("clock",)):
+        if df is None or df.empty:
+            return df
+        df = df.drop_duplicates(subset=[pk_col], keep="last")
+        for col in epoch_cols:
+            if col in df.columns:
+                df[col] = self._coerce_epoch(df[col])
+        return df
+
+    def _load_with_pk(self, conn, table_name, df, pk_col):
+        if df is None or df.empty:
+            logging.warning(f"{table_name}: bos veri, tablo degismedi.")
+            return
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
+        conn.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table_name}_{pk_col} "
+            f"ON {table_name} ({pk_col})"
+        )
+        logging.info(
+            f"Ham tablo guncellendi: {table_name} ({len(df)} satir, "
+            f"PK: {pk_col})"
+        )
+
+    def load_raw_tables(self):
+        with sqlite3.connect(self.db_path) as conn:
+            for prefix, table_name, pk_col in [
+                ("events/", "events", "eventid"),
+                ("problem/", "problem", "eventid"),
+            ]:
+                frames = []
+                for key in self._list_raw_objects(prefix):
+                    s3_path = f"s3://{self.raw_bucket}/{key}"
+                    try:
+                        frames.append(pd.read_parquet(s3_path, storage_options=self.storage_options))
+                    except Exception as e:
+                        logging.warning(f"{key} okunamadi (atlaniyor): {e}")
+                if not frames:
+                    logging.warning(f"{table_name}: Minio'da veri yok.")
+                    continue
+                df = pd.concat(frames, ignore_index=True)
+                df = self._normalize_raw(df, pk_col)
+                self._load_with_pk(conn, table_name, df, pk_col)
+
+            for table_name, key, pk_col in [
+                ("hosts", "hosts/latest_hosts.parquet", "hostid"),
+                ("items", "items/latest_items.parquet", "itemid"),
+                ("triggers", "triggers/latest_triggers.parquet", "triggerid"),
+                ("functions", "functions/latest_functions.parquet", "functionid"),
+            ]:
+                s3_path = f"s3://{self.raw_bucket}/{key}"
+                try:
+                    df = pd.read_parquet(s3_path, storage_options=self.storage_options)
+                except Exception as e:
+                    logging.error(f"{key} okunamadi: {e}")
+                    return False
+                self._load_with_pk(conn, table_name, df, pk_col)
+
+        return True
 
     def _get_existing_columns(self, conn, table_name):
         try:
@@ -107,9 +187,11 @@ class ZabbixLoader:
 
                 df.to_sql(staging_table, conn, if_exists='replace', index=False)
 
+                col_names = [f'"{c}"' for c in df.columns]
+                cols_sql = ", ".join(col_names)
                 cursor.execute(f"""
-                    INSERT OR REPLACE INTO {table_name}
-                    SELECT * FROM {staging_table}
+                    INSERT OR REPLACE INTO {table_name} ({cols_sql})
+                    SELECT {cols_sql} FROM {staging_table}
                 """)
 
                 cursor.execute(f"DROP TABLE {staging_table}")
@@ -147,6 +229,19 @@ def run_load_pipeline(chunk_id: str) -> bool:
         logging.info(f"Chunk isaretlendi: {chunk_id} ({len(feature_matrix)} satir)")
 
     return success
+
+
+def run_load_raw_pipeline() -> bool:
+    db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+
+    loader = ZabbixLoader(
+        minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
+        minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
+        db_path=db_path
+    )
+
+    return loader.load_raw_tables()
 
 
 if __name__ == "__main__":

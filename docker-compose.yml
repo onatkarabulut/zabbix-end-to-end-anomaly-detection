@@ -99,6 +99,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./ETL:/opt/airflow/ETL
+      - ./ml:/opt/airflow/ml
+      - ./tools:/opt/airflow/tools
       - ./data:/opt/airflow/data
     networks:
       - zabbix-net
@@ -130,6 +132,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./ETL:/opt/airflow/ETL
+      - ./ml:/opt/airflow/ml
+      - ./tools:/opt/airflow/tools
       - ./data:/opt/airflow/data
     ports:
       - "8081:8080"
@@ -162,6 +166,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./ETL:/opt/airflow/ETL
+      - ./ml:/opt/airflow/ml
+      - ./tools:/opt/airflow/tools
       - ./data:/opt/airflow/data
     command: scheduler
     networks:

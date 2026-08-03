@@ -1,5 +1,6 @@
 import io
 import os
+import time
 import logging
 import psycopg2
 import pandas as pd
@@ -24,7 +25,12 @@ class ZabbixExtractor:
             endpoint_url=minio_endpoint,
             aws_access_key_id=minio_access_key,
             aws_secret_access_key=minio_secret_key,
-            config=Config(signature_version='s3v4'),
+            config=Config(
+                signature_version='s3v4',
+                connect_timeout=30,
+                read_timeout=60,
+                retries={'max_attempts': 2}
+            ),
             region_name='us-east-1'
         )
         self._ensure_bucket_exists()
@@ -40,21 +46,57 @@ class ZabbixExtractor:
             host=self.pg_host,
             user=self.pg_user,
             password=self.pg_pass,
-            dbname=self.pg_db
+            dbname=self.pg_db,
+            connect_timeout=15
         )
 
-    def _execute_query_to_df(self, query, description_prefix="Sorgu"):
+    def _execute_query_to_df(self, query, description_prefix="Sorgu", page_size=None, attempts=3):
+        if page_size is None:
+            page_size = int(os.getenv("EXTRACT_PAGE_SIZE", "50000"))
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._execute_query_to_df_once(query, description_prefix, page_size)
+            except psycopg2.errors.QueryCanceled:
+                logging.error(f"{description_prefix} ZORLA DURDURULDU (Timeout - {self.timeout_ms}ms asildi).")
+                raise
+            except Exception as e:
+                last_exc = e
+                if attempt < attempts:
+                    wait = 2 ** attempt
+                    logging.warning(
+                        f"{description_prefix} deneme {attempt}/{attempts} basarisiz "
+                        f"({e}). {wait}s sonra tekrar denenecek."
+                    )
+                    time.sleep(wait)
+        logging.error(f"{description_prefix} {attempts} denemeden sonra basarisiz: {last_exc}")
+        raise last_exc
+
+    def _execute_query_to_df_once(self, query, description_prefix="Sorgu", page_size=None):
         try:
             with self.get_pg_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(f"SET statement_timeout = {self.timeout_ms};")
-                    cur.execute(query)
-                    rows = cur.fetchall()
-                    if not rows:
-                        logging.warning(f"{description_prefix} icin {self.timeout_ms}ms icinde kayit bulunamadi.")
+                    all_rows = []
+                    offset = 0
+                    cols = None
+                    while True:
+                        paginated = f"{query} LIMIT {page_size} OFFSET {offset}"
+                        cur.execute(paginated)
+                        rows = cur.fetchall()
+                        if not rows:
+                            break
+                        if cols is None:
+                            cols = [desc[0] for desc in cur.description]
+                        all_rows.extend(rows)
+                        offset += page_size
+                        if len(rows) < page_size:
+                            break
+                    if not all_rows:
+                        logging.warning(f"{description_prefix} icin kayit bulunamadi.")
                         return None
-                    cols = [desc[0] for desc in cur.description]
-                    return pd.DataFrame(rows, columns=cols)
+                    logging.info(f"{description_prefix}: {len(all_rows)} satir {page_size}'lik {offset // page_size} sayfada getirildi.")
+                    return pd.DataFrame(all_rows, columns=cols)
         except psycopg2.errors.QueryCanceled:
             logging.error(f"{description_prefix} ZORLA DURDURULDU (Timeout - {self.timeout_ms}ms asildi).")
             raise
@@ -106,6 +148,14 @@ class ZabbixExtractor:
         query = "SELECT itemid, hostid, name, key_, value_type, status FROM items WHERE status = 0"
         return self._execute_query_to_df(query, "items")
 
+    def extract_triggers(self):
+        query = "SELECT triggerid, expression, description, priority, status FROM triggers"
+        return self._execute_query_to_df(query, "triggers")
+
+    def extract_functions(self):
+        query = "SELECT functionid, itemid, triggerid, name, parameter FROM functions"
+        return self._execute_query_to_df(query, "functions")
+
 
 def run_extraction_pipeline(start_ts: int, end_ts: int) -> bool:
     start_str = pendulum.from_timestamp(start_ts).to_datetime_string()
@@ -133,27 +183,26 @@ def run_extraction_pipeline(start_ts: int, end_ts: int) -> bool:
 
     data_found = False
     for table_name, extract_func in tables:
-        try:
-            df = extract_func(start_ts, end_ts)
-            if df is not None and not df.empty:
-                logging.info(f"{table_name}: {len(df)} kayit bulundu.")
-            success = extractor.push_to_minio(df, table_name, chunk_id)
-            if success:
-                data_found = True
-        except Exception as e:
-            logging.warning(f"{table_name} extract hatasi (ignored): {e}")
+        df = extract_func(start_ts, end_ts)
+        if df is not None and not df.empty:
+            logging.info(f"{table_name}: {len(df)} kayit bulundu.")
+        success = extractor.push_to_minio(df, table_name, chunk_id)
+        if success:
+            data_found = True
 
     if not data_found:
         logging.warning(f"{start_ts} - {end_ts} araliginda veri bulunamadi.")
         return False
 
-    try:
-        df_hosts = extractor.extract_hosts()
-        extractor.push_to_minio(df_hosts, "hosts", "latest_hosts")
-        df_items = extractor.extract_items()
-        extractor.push_to_minio(df_items, "items", "latest_items")
-    except Exception as e:
-        logging.warning(f"Hosts/Items extract hatasi (ignored): {e}")
+    snapshot_tables = [
+        ("hosts", "latest_hosts", extractor.extract_hosts),
+        ("items", "latest_items", extractor.extract_items),
+        ("triggers", "latest_triggers", extractor.extract_triggers),
+        ("functions", "latest_functions", extractor.extract_functions),
+    ]
+    for table_name, snapshot_id, extract_func in snapshot_tables:
+        df = extract_func()
+        extractor.push_to_minio(df, table_name, snapshot_id)
 
     return True
 
