@@ -1,0 +1,4 @@
+{"anomaly_id": "manual-032e7d2b", "type": "manual", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785854271, "end_ts": 1785854455, "metadata": {"note": "eski 184s test"}}
+{"anomaly_id": "manual-0df0fb2c", "type": "manual", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785854568, "end_ts": 1785854636, "metadata": {"note": "eski 68s test"}}
+{"anomaly_id": "manual-4c0f5dc3", "type": "manual", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785854653, "end_ts": 1785855253, "metadata": {"note": "eski 600s test"}}
+{"anomaly_id": "cpu-1e2fbea6", "type": "cpu", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785887213, "end_ts": 1785887814, "metadata": {"cores": 20}}

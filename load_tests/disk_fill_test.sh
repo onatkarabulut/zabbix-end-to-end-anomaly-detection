@@ -1,10 +1,13 @@
 #!/bin/bash
 # Bulunulan dizinde yavaş yavaş 5GB'lık bir dosya oluşturur ve işi bitince siler.
 
-LOG_FILE="load_data/anomaly_ground_truth.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ground_truth_lib.sh"
+
 DUMP_FILE="zabbix_anomaly_test.img"
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') - [ANOMALİ BAŞLANGICI] Kademeli disk doldurma başladı (Hedef: 5GB)." >> $LOG_FILE
+START_TS=$(date +%s)
+echo "[*] GÜVENLİ Disk Testi çalışıyor..."
 
 # Güvenlik: Her saniye 50MB yazarak diski boğmadan 100 adımda durur.
 dd if=/dev/zero of=$DUMP_FILE bs=50M count=100 status=progress
@@ -15,5 +18,6 @@ sleep 300
 # Güvenlik: Dosya sistemde çöp olarak kalmasın diye mutlaka silinir.
 rm -f $DUMP_FILE
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') - [ANOMALİ BİTİŞİ] Disk temizlendi." >> $LOG_FILE
+END_TS=$(date +%s)
+log_ground_truth disk disk_fill "$START_TS" "$END_TS" '{"file": "zabbix_anomaly_test.img", "size_gb": 5}'
 echo "[*] Test tamamlandı, oluşturulan test dosyası silindi."

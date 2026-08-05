@@ -102,15 +102,27 @@ DAG'i Airflow'tan tetiklemek: `zabbix_ml_pipeline` dag'ini acip "Trigger DAG".
 
 ## Ground truth (sentetik anomali + etiket)
 
-`tools/ground_truth.py` izlenen host uzerinde yapay yuk uretir ve zaman
-pencerelerini `data/ground_truth.jsonl`'a loglar; `labels` komutu ML icin
-dakika bazli 0/1 hedef etiket CSV'si uretir.
+Ground truth tek kaynaktan gelir: `data/ground_truth.jsonl` (JSONL). Anomali
+testleri (`load_tests/`) basarili tamamlaninca pencerelerini dogrudan buraya
+yazar (UTC epoch, `tools/ground_truth.py` ile ayni format). Iptal edilen
+testler loglanmaz; ayni pencere tekrar yazilmaz (idempotent).
+
+Iki giris yolu vardir:
+
+1. **Controller (tek giris noktasi)** — `load_tests/anomaly_controller.sh`:
+   ```bash
+   cd load_tests
+   ./anomaly_controller.sh cpu start     # cpu/ram/disk/net
+   ./anomaly_controller.sh cpu stop      # iptal/temizlik
+   ```
+2. **Standalone scriptler** — `load_tests/cpu_spike_test.sh`,
+   `disk_fill_test.sh`, `network_flap.sh`, `memory_leak_test.py`. Hepsi
+   `load_tests/ground_truth_lib.sh`'i source edip `log_ground_truth` ile
+   `data/ground_truth.jsonl`'e yazar.
+
+Ayrica `tools/ground_truth.py` elle pencere loglar ve etiket uretir:
 
 ```bash
-python tools/ground_truth.py cpu    --duration 120 --label cpu_burn --cores 2
-python tools/ground_truth.py memory --duration 120 --size 2G
-python tools/ground_truth.py disk   --duration 120 --size 1G --path /tmp/zabbix_gt
-python tools/ground_truth.py net    --duration 60 --target 10.0.0.5 --rate 100M
 python tools/ground_truth.py manual --start <utc_epoch> --end <utc_epoch> --label note
 python tools/ground_truth.py list
 python tools/ground_truth.py labels --db data/zabbix_ml.db --out data/labels.csv
@@ -118,8 +130,9 @@ python tools/ground_truth.py labels --db data/zabbix_ml.db --out data/labels.csv
 
 Notlar:
 - Zamanlar UTC epoch'tur; `ml_feature_matrix` de UTC oldugundan uyumludur.
-- `cpu/memory` icin `stress-ng`, `net` icin `iperf3` (karsi taraf `iperf3 -s`),
-  `disk` icin `dd` gereklidir. Container icinde root gerektiren komutlar icin
-  `--sudo` bayragini kullanin.
-- `labels` ciktisi: `datetime_minute, host, label(0/1), anomaly` — anomali
-  penceresi [start, end) araligindaki her dakikaya 1 isaretler.
+- `cpu/memory` icin `stress-ng`, `net` icin `iperf3`, `disk` icin `dd`
+  gereklidir.
+- `labels` ciktisi (`data/labels.csv`): `datetime_minute, host, label(0/1),
+  anomaly` — anomali penceresi [start, end) araligindaki her dakikaya 1
+  isaretler. Bu, Faz 3'te model degerlendirmesinde `y_true` olarak kullanilir;
+  `ground_truth.jsonl` ise ham pencere kaynagidir.
