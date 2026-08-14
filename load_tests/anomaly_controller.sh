@@ -88,22 +88,11 @@ case $TEST_TYPE in
         ;;
 
     ram)
-        echo "[*] GÜVENLİ Bellek Sızıntısı (Memory Leak): Maksimum 2GB RAM işgal edilecek..."
-        METADATA='{"size": "2G"}'
-        python3 -c "
-import time
-MAX_STEPS = 40
-leak_list = []
-print('    -> RAM yavaş yavaş dolduruluyor...')
-for step in range(MAX_STEPS):
-    leak_list.append(' ' * 50 * 1024 * 1024)
-    time.sleep(10)
-print('    -> 2GB sınıra ulaşıldı. Zabbix tespiti için 2 dakika bekleniyor...')
-time.sleep(120)
-del leak_list
-print('    -> RAM serbest bırakıldı.')
-" &
+        echo "[*] GÜVENLİ Bellek Testi: RAM_PERCENT=${RAM_PERCENT:-25}% hedef (otomatik algılanan RAM üzerinden)..."
+        RAM_PERCENT="${RAM_PERCENT:-25}" RAM_HOLD_MIN="${RAM_HOLD_MIN:-5}" \
+            python3 "$SCRIPT_DIR/memory_leak_test.py" &
         wait $!
+        LOGGED_BY_SCRIPT=1
         ;;
 
     disk)
@@ -142,9 +131,11 @@ DURATION=$((END_TS - START_TS))
 trap - SIGINT SIGTERM
 
 # Ground truth'e yaz (basarili testler icin)
-LABEL_VAR="LABEL_$(echo "$TEST_TYPE" | tr '[:lower:]' '[:upper:]')"
-LABEL="${!LABEL_VAR}"
-log_ground_truth "$TEST_TYPE" "$LABEL" "$START_TS" "$END_TS" "$METADATA"
+if [ -z "${LOGGED_BY_SCRIPT:-}" ]; then
+    LABEL_VAR="LABEL_$(echo "$TEST_TYPE" | tr '[:lower:]' '[:upper:]')"
+    LABEL="${!LABEL_VAR}"
+    log_ground_truth "$TEST_TYPE" "$LABEL" "$START_TS" "$END_TS" "$METADATA"
+fi
 
 echo "=================================================="
 echo "[*] Test başarıyla tamamlandı!"

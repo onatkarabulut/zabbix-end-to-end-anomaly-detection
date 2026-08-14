@@ -2,3 +2,11 @@
 {"anomaly_id": "manual-0df0fb2c", "type": "manual", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785854568, "end_ts": 1785854636, "metadata": {"note": "eski 68s test"}}
 {"anomaly_id": "manual-4c0f5dc3", "type": "manual", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785854653, "end_ts": 1785855253, "metadata": {"note": "eski 600s test"}}
 {"anomaly_id": "cpu-1e2fbea6", "type": "cpu", "host": "Zabbix server", "label": "cpu_burn", "start_ts": 1785887213, "end_ts": 1785887814, "metadata": {"cores": 20}}
+{"anomaly_id": "ram-1785934804", "type": "ram", "host": "Zabbix server", "label": "memory_pressure", "start_ts": 1785934804, "end_ts": 1785935709, "metadata": {"percent": 25.0, "target_gb": 12.53}}
+{"anomaly_id": "ram-1785936567", "type": "ram", "host": "Zabbix server", "label": "memory_pressure", "start_ts": 1785936567, "end_ts": 1785937472, "metadata": {"percent": 25.0, "target_gb": 12.53}}
+{"anomaly_id": "disk-a52187b7", "type": "disk", "host": "Zabbix server", "label": "disk_fill", "start_ts": 1786716145, "end_ts": 1786716447, "metadata": {"file": "zabbix_test_data.img", "size_gb": 5}}
+{"anomaly_id": "net-1526b563", "type": "net", "host": "Zabbix server", "label": "network_burst", "start_ts": 1786720746, "end_ts": 1786720746, "metadata": {"target": "127.0.0.1"}}
+{"anomaly_id": "net-7bc10a17", "type": "net", "host": "Zabbix server", "label": "network_burst", "start_ts": 1786720750, "end_ts": 1786720750, "metadata": {"target": "127.0.0.1"}}
+{"anomaly_id": "net-88d360df", "type": "net", "host": "Zabbix server", "label": "network_burst", "start_ts": 1786720751, "end_ts": 1786720751, "metadata": {"target": "127.0.0.1"}}
+{"anomaly_id": "net-8e6ef4ca", "type": "net", "host": "Zabbix server", "label": "network_burst", "start_ts": 1786720752, "end_ts": 1786720752, "metadata": {"target": "127.0.0.1"}}
+{"anomaly_id": "net-182eaee5", "type": "net", "host": "Zabbix server", "label": "network_burst", "start_ts": 1786720773, "end_ts": 1786721073, "metadata": {"target": "127.0.0.1"}}

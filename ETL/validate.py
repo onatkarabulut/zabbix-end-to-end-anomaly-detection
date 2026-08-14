@@ -8,10 +8,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 REQUIRED_PER_CHUNK = [
     ("history", "history/{chunk_id}.parquet"),
-    ("trends", "trends/{chunk_id}.parquet"),
 ]
 
 OPTIONAL_PER_CHUNK = [
+    ("trends", "trends/{chunk_id}.parquet"),
     ("events", "events/{chunk_id}.parquet"),
     ("problem", "problem/{chunk_id}.parquet"),
 ]

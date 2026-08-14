@@ -1,0 +1,7 @@
+# Faz 3 - model egitimi icin gereken kutuphaneler
+# Kurulum: python3 -m pip install -r requirements-ml.txt
+pandas
+numpy
+scikit-learn
+torch
+joblib
