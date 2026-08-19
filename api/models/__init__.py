@@ -1,0 +1,1 @@
+"""(M) Veri erisim katmani."""

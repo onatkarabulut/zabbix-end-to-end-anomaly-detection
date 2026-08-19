@@ -58,25 +58,25 @@ yoksa 999999. `events` bos ise `problem` tablosuna dusulur.
 
 Ground truth dosyasi yoksa etiketler sadece alarmlardan uretilir.
 
-## Yardimci araclar (ml/ + tools/)
+## Yardimci araclar (tools/)
 
 ```bash
 # Warehouse'u MinIO'dan sifirdan yeniden insa (bozuk DB durumunda)
 python tools/rebuild_warehouse.py --db data/zabbix_ml.db
 
-# Zaman bazli train/test split (karistirma yok, gecmis->train gelecek->test)
-python ml/train_test_split.py --db data/zabbix_ml.db --split-ts <epoch> --gap-min 60 --out data/
-python ml/train_test_split.py --db data/zabbix_ml.db --split-ratio 0.8
-#   --drop-hourly (varsayilan acik): _hourly_* sutunlarini duser (leakage korumasi)
+# Model versiyon yonetimi (list / promote / rollback / current / remove)
+python tools/model_cli.py list
+python tools/model_cli.py promote run_verify_tb2
 
-# Feature selection (813 -> ~100-400; varyans + korelasyon dedup + top-k)
-python ml/select_features.py --db data/zabbix_ml.db --variance-threshold 1e-6 --corr-threshold 0.95 --out data/selected_features.csv
-python ml/select_features.py --input data/train.csv --top-k 200
+# Model denetimi (sizinti, reprodüksiyon, degradation guard)
+python tools/model_audit.py --db data/zabbix_ml.db --run-dir data/models/runs/<run_id>
 ```
 
-Split ve select araclari `datetime_minute`, `host`, `is_anomaly`,
-`time_since_last_alarm` ve `_hourly_*` sutunlarini ozellik adaylarindan haric
-tutar (leakage + hedef kolon korumasi).
+Split ve feature selection, egitim hatti `ml/train_anomaly_models.py`
+icerisindedir (zaman-bazli `now - 14 gun` split + `select_features_on_train`).
+`datetime_minute`, `host`, `is_anomaly`, `time_since_last_alarm` ve
+`_hourly_*` kolonlari ozellik adaylarindan haric tutulur (leakage + hedef
+kolon korumasi).
 
 ## Kurulum & calistirma
 
@@ -159,7 +159,7 @@ olmadan (PDF Faz 2/3 kosulu) split + feature engineering + 3 model calistirir:
 # Gerekli kutuphaneler (host'ta yoksa once kur):
 python3 -m pip install -r requirements-ml.txt
 
-# Egitim (varsayilan split: 8/4 00:00 UTC = 1785801600)
+# Egitim (varsayilan split: now - 14 gun, surekli kayar)
 python ml/train_anomaly_models.py --db data/zabbix_ml.db
 # Opsiyonlar:
 #   --split-ts <epoch>    split noktasi (oncesi train, sonrasi test)
@@ -192,20 +192,47 @@ baseline olarak raporlanir (model ne kadar erken / kac yanlis alarm).
 
 ## Faz 3 - Sonuclar
 
-Mevcut sentetik testlerle (3 CPU burn, 2 memory pressure, 1 disk fill)
-egitilen modellerin test seti (8/4 sonrasi) sonuclari:
+Sentetik testlerle (3 CPU burn, 2 memory pressure, 1 disk fill) egitilen
+modellerin, dinamik split `now - 14 gun` (ornek retrain: 2026-08-05) sonrasi
+test seti sonuclari. Hiperparametreler: `top-k=150`, `thr-quantile=0.9995`,
+`seq-len=60`:
 
 | Model | Precision | Recall | F1 |
 |-------|-----------|--------|-----|
-| LSTM-Autoencoder | 0.20 | 1.00 | 0.34 |
-| OneClassSVM | 0.06 | 1.00 | 0.11 |
+| LSTM-Autoencoder | 0.00 | 0.00 | 0.00 |
+| OneClassSVM | 0.073 | 1.00 | 0.137 |
 | IsolationForest | 0.00 | 0.00 | 0.00 |
 
-- LSTM tum CPU/RAM pencerelerini yakaladi (disk hariç); OneClassSVM hepsini
-  yakaladi ama cok sayida yanlis pozitif uretti (testin ~%46'si).
-- **Disk sinyali zayif** (5GB/doluluk artisi ~%2): hiçbir model yakalayamadi.
+- OneClassSVM her iki memory penceresini de tam yakaladi (15/15 + 15/15,
+  latency 0 dk); testteki tek skorlanabilir anomali turu memory oldu.
+- **LSTM 0**: test anomali pencereleri (13:00-13:44) verideki 20 dk'lik
+  kopuklugun (12:02-12:22) hemen sonrasinda; LSTM skoru sekansin sonuna
+  atandigindan pencereler yapısal olarak skorlanamadi. Realtime ile ayni
+  kurala (tum gecmis uzerinden kayan pencere) getirildi, ancak bu veri
+  kisitini asamaz.
+- **IsolationForest 0**: testte hic pozitif uretmedi (esik cok sik).
+- Not: `disk_fill` penceresinde (14.08) feature matrix'te hic satir yok
+  (ETL o gun calismadi) — model o anomaliyi goremez. Test yalnizca 30 anomali
+  dakikasi icerdigi icin F1 metrikleri kucuk orneklemden etkilenir; recall 1.0
+  dogru kullanicinin istedigi tespit davranisini yansitir.
 - `comp_vs_zabbix.csv`'de tum pencerelerde `zabbix_alarm_overlap=False`:
   sentetik testler Zabbix trigger esiklerini asmadigindan Zabbix hicbir anomaliyi
   alarmlamadi — ML'in erken yakalama potansiyeli PDF tezini destekliyor.
-- Not: test setindeki 8/6-8/10 veri boslugu (ETL o gunler calismadi) train-test
-  dagilim kaymasina yol acar; sonuclar bu kisitla yorumlanmalidir.
+
+### Network flap (ağ) metrik tipi neden dahil edilemedi
+
+Faz 3 raporu CPU spike / kademeli disk dolumu / **network flap** ayrimini
+istiyor, ancak ag metrikleri pipeline'a hic girmiyor:
+
+- Zabbix agent'ta `lo` (loopback) arayuzu icin item yok; yalnizca
+  `net.if.in/out["eth0"]` item'lari mevcut.
+- ETL (`transform.py`) yalnizca Zabbix'te var olan item'lari pivotlar; ag
+  verisi olmadigindan `ml_feature_matrix`'te hicbir `net.*` kolonu olusmuyor.
+- `load_tests/anomaly_controller.sh net start` ile iperf3 loopback testi
+  yapildi (14.08 18:19, 300s, ~86 Gbit/s), ancak `lo` izlenmediginden
+  Zabbix'e/history'ye yansimadi ve ground truth'ten cikarildi.
+
+Bu nedenle "network flap" metrik tipi model karsilastirmasina dahil
+edilemedi; CPU/RAM/disk sonuclari bu durumdan etkilenmez (egitim zaten ag
+kolonu icermiyordu). Gercek ag izlemesi icin agent'ta `lo` veya fiziksel
+arayuz item'i tanimlanip ETL'in yeniden kusturulmesi gerekir.

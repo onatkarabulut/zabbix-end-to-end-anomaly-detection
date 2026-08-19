@@ -115,8 +115,16 @@ class ZabbixTransformer:
             logging.info(f"Trends verisi eklendi: {chunk_id}")
 
         df_pivot = df_pivot.drop_duplicates(subset=['host', 'datetime_minute'])
-        df_pivot = df_pivot.groupby('host').apply(lambda x: x.ffill(limit=3)).reset_index(drop=True)
+        # NULL/boş host: hostu olmayan (yetersiz envanter) kayıtlar modeli
+        # kirletir; tahmine/görselleştirmeye girmez, burada elenir.
+        df_pivot = df_pivot[df_pivot['host'].notna() &
+                            (df_pivot['host'].astype(str).str.strip() != '')]
+        host_vals = df_pivot['host'].copy()
+        df_pivot = df_pivot.drop(columns=['host']).groupby(host_vals).ffill(limit=3)
+        df_pivot['host'] = host_vals.to_numpy()
         df_pivot = df_pivot.dropna(thresh=int(len(df_pivot.columns) * 0.7))
+
+        df_pivot['chunk_id'] = chunk_id
 
         return df_pivot
 

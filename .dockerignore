@@ -1,0 +1,10 @@
+.venv-test/
+__pycache__/
+*.pyc
+.git/
+data/
+zabbix-export/
+redis-data/
+minio-data/
+zabbix-pg-data/
+.pytest_cache/

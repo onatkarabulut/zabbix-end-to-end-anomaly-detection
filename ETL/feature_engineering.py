@@ -23,8 +23,6 @@ GROUND_TRUTH_FILE = os.getenv(
 
 DEFAULT_HOST = "Zabbix server"
 
-TARGET_COLUMNS = ("is_anomaly",)
-
 METRIC_PREFIXES = (
     "system.cpu", "vm.memory", "vfs.dev", "vfs.fs",
     "system.swap",
@@ -60,12 +58,62 @@ def _ensure_enriched_table(conn, columns):
             conn.execute(f'ALTER TABLE {ENRICHED_TABLE} ADD COLUMN "{col}" {col_type}')
 
 
-def _rolling_trend(series, window):
-    def _slope(y):
-        if len(y) < 2:
-            return 0.0
-        return float((y.iloc[-1] - y.iloc[0]) / max(len(y), 1))
-    return series.rolling(window, min_periods=2).apply(_slope, raw=False)
+def _time_based_rolling_stats(s, w):
+    """Kesintisiz dakika izgarasi uzerinde realtime scorer (_feature_vector)
+    ile birebir ayni ZAMAN-bazli kayan pencere istatistikleri:
+
+      avg  : son w dk'daki mevcut degerlerin ortalamasi (NaN yoksayilir)
+      std  : populasyon std (ddof=0, np.std gibi); <2 deger varsa 0
+      trend: (son mevcut - ilk mevcut) / mevcut deger sayisi; <2 ise 0
+
+    Not: pandas rolling varsayilan ddof=1 (orneklem std) kullanir; realtime
+    np.std(ddof=0) kullandigindan ddof=0 verilir. Satir-bazli degil pencere
+    zaman-bazlidir (boslukta NaN sayilir) -> ETL/train/realtime uyumlu.
+    """
+    present = s.notna()
+    cnt = present.rolling(w, min_periods=1).sum()
+    avg = s.rolling(w, min_periods=1).mean()
+    std = s.rolling(w, min_periods=1).std(ddof=0).fillna(0)
+    first = s.bfill().shift(w - 1, fill_value=s.bfill().iloc[0] if len(s) else 0.0)
+    last = s.ffill()
+    trend = ((last - first) / cnt).where(cnt >= 2, 0.0)
+    return avg, std, trend
+
+
+def _host_minute_grid(df, host):
+    """Bir host'un satirlarini kesintisiz 1-dk izgaraya reindex'ler.
+
+    Rolling ozellikler ZAMAN-bazli olmalidir (realtime scorer ile birebir ayni
+    kural: '5m ort' = son 5 GERCEK dakika). Satir-bazli pandas rolling, veri
+    bosluklarinda gercek zaman penceresinden sapar ve egitim/canli skor
+    uyumsuzluguna yol acar. Bozuk dakikalar NaN'dir.
+    """
+    g = df[df["host"] == host].sort_values("datetime_minute")
+    if g.empty or g["datetime_minute"].isna().all():
+        return pd.DataFrame(index=pd.DatetimeIndex([]))
+    idx = pd.date_range(g["datetime_minute"].min(), g["datetime_minute"].max(), freq="min")
+    return g.set_index("datetime_minute").reindex(idx)
+
+
+def _rolling_features(df):
+    """Ham feature matrix'ten ZAMAN-bazli rolling avg/std/trend kolonlarini
+    uretir (kolon adlari train/realtime ile ayni: <key>_{avg,std,trend}_{w}m).
+    """
+    metric_cols = [c for c in df.columns if _is_metric(c)]
+    parts = []
+    for host in df["host"].unique():
+        grid = _host_minute_grid(df, host)
+        mask = (df["host"] == host).to_numpy()
+        ts_of_rows = df.loc[mask, "datetime_minute"]
+        for col in metric_cols:
+            s = grid[col].astype(float)
+            for w in ROLLING_WINDOWS:
+                avg, std, trend = _time_based_rolling_stats(s, w)
+                for stat_name, r in (("avg", avg), ("std", std), ("trend", trend)):
+                    out = np.full(len(df), np.nan)
+                    out[mask] = r.reindex(ts_of_rows).to_numpy()
+                    parts.append(pd.Series(out, index=df.index, name=f"{col}_{stat_name}_{w}m"))
+    return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=df.index)
 
 
 def _read_ground_truth_windows():
@@ -99,6 +147,13 @@ def _interval_mask(minutes, intervals):
 
 
 def compute_enriched_features(df: pd.DataFrame, db_path: str = None) -> pd.DataFrame:
+    before = len(df)
+    df = df[df["host"].notna() & (df["host"].astype(str).str.strip() != "")].copy()
+    if len(df) < before:
+        logging.warning(
+            f"{before - len(df)} satir NULL/boş host nedeniyle elendi "
+            f"(modeli kirletmemesi ve rolling izgara hatalarini onlemek icin)"
+        )
     df = df.sort_values(["host", "datetime_minute"]).reset_index(drop=True)
     metric_cols = [c for c in df.columns if _is_metric(c)]
     logging.info(f"Feature engineering: {len(metric_cols)} metrik, {len(df)} satir")
@@ -108,20 +163,9 @@ def compute_enriched_features(df: pd.DataFrame, db_path: str = None) -> pd.DataF
         enriched["datetime_minute"]
     ).astype("datetime64[ns]")
 
-    rolling_cols = []
-    for col in metric_cols:
-        for w in ROLLING_WINDOWS:
-            rolling_cols.append(df.groupby("host")[col].transform(
-                lambda x: x.rolling(w, min_periods=1).mean()
-            ).rename(f"{col}_avg_{w}m"))
-            rolling_cols.append(df.groupby("host")[col].transform(
-                lambda x: x.rolling(w, min_periods=1).std().fillna(0)
-            ).rename(f"{col}_std_{w}m"))
-            rolling_cols.append(df.groupby("host")[col].transform(
-                lambda x: _rolling_trend(x, w)
-            ).rename(f"{col}_trend_{w}m"))
-    if rolling_cols:
-        enriched = pd.concat([enriched, pd.concat(rolling_cols, axis=1)], axis=1)
+    rolling_cols = _rolling_features(df)
+    if len(rolling_cols.columns):
+        enriched = pd.concat([enriched, rolling_cols], axis=1)
 
     alarm_intervals = defaultdict(list)
     if db_path is not None:
@@ -316,6 +360,6 @@ def run_feature_engineering(
 
 
 if __name__ == "__main__":
-    db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+    db_path = os.getenv("SQLITE_DB_PATH", "data/zabbix_ml.db")
     success = run_feature_engineering(db_path)
     logging.info(f"Feature engineering {'basarili' if success else 'basarisiz'}")

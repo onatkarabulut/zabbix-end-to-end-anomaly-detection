@@ -1,0 +1,29 @@
+# Airflow image - ML retrain (sklearn/torch) + MinIO (boto3/s3fs) destegi.
+# Stock apache/airflow:2.10.3 image'i ML paketleri icermez; bu Dockerfile
+# train DAG'inin calisabilmesi icin bagimliliklari imaja gomer.
+#
+# ONEMLI: Airflow resmi imaji pip paketlerini SADECE 'airflow' kullanicisiyla
+# kurar; root ile pip install bilerek hata verir
+# ("You are running pip as root. Please use 'airflow' user to run pip!").
+# Bu yuzden USER root kullanilmaz, kurulumlar airflow kullaniciyla yapilir.
+FROM apache/airflow:2.10.3
+
+# torch CPU (PyTorch index) + diger bagimliliklari PyPI'dan.
+# NOT: --index-url degil --extra-index-url olmali; aksi halde torch'un
+# bagimliliklari (sympy, networkx, filelock...) PyPI'da aranmaz ve build patlar.
+# "apache-airflow==${AIRFLOW_VERSION}" eklemek bagimliliklari ayni versiyonda tutar.
+#
+# numpy>=2 ZORUNLU: apache/airflow:2.10.3 imajindaki pandas wheel'i numpy 2.x'e
+# derlenmis. Imajda numpy 1.x kurulu oldugu icin pip onu kendiliginden
+# yukseltmez; "numpy<2" iceren pin de runtime'da pandas'i "numpy.dtype size
+# changed (Expected 96, got 88)" ile cokerir. Bu yuzden numpy acikca >=2'ye
+# yukseltilir (sklearn/pyarrow/torch guncel surumleri numpy 2 destekler).
+#
+# pandas>=3,<4 pinli: pandas 3.0'da groupby().apply() varsayilan olarak grup
+# kolonunu (host) DUSERMEYE basladi (2.x'te korunuyordu). ETL/transform bu
+# degisiklige gore yeniden yazildi; 4.x gibi yeni major surumler tekrar
+# sessizce davranis degistirebilir -> major surum pinli.
+RUN pip install --no-cache-dir "apache-airflow==${AIRFLOW_VERSION}" torch \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+    && env -u PIP_CONSTRAINT pip install --no-cache-dir \
+        "numpy>=2" "pandas>=3,<4" scikit-learn joblib boto3 s3fs pyarrow psycopg2-binary colorama

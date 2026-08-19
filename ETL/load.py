@@ -23,7 +23,7 @@ def _ensure_processed_table(db_path):
 
 def is_chunk_processed(chunk_id: str, db_path: str = None) -> bool:
     if db_path is None:
-        db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+        db_path = os.getenv("SQLITE_DB_PATH", "data/zabbix_ml.db")
     _ensure_processed_table(db_path)
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(f"SELECT 1 FROM {PROCESSED_TABLE} WHERE chunk_id = ?", (chunk_id,))
@@ -160,7 +160,7 @@ class ZabbixLoader:
                 col_type = "REAL"
                 if col in ("datetime_minute",):
                     col_type = "TIMESTAMP"
-                elif col in ("host",):
+                elif col in ("host", "chunk_id"):
                     col_type = "TEXT"
                 conn.execute(f"ALTER TABLE {table_name} ADD COLUMN \"{col}\" {col_type}")
             logging.info(f"Tabloya {len(new_cols)} yeni kolon eklendi: {', '.join(new_cols)}")
@@ -205,7 +205,7 @@ class ZabbixLoader:
 
 
 def run_load_pipeline(chunk_id: str) -> bool:
-    db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+    db_path = os.getenv("SQLITE_DB_PATH", "data/zabbix_ml.db")
 
     if is_chunk_processed(chunk_id, db_path):
         logging.info(f"Chunk zaten islenmis, atlaniyor: {chunk_id}")
@@ -232,7 +232,7 @@ def run_load_pipeline(chunk_id: str) -> bool:
 
 
 def run_load_raw_pipeline() -> bool:
-    db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+    db_path = os.getenv("SQLITE_DB_PATH", "data/zabbix_ml.db")
 
     loader = ZabbixLoader(
         minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),

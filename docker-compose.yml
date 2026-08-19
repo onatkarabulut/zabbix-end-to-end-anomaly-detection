@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres-server:
     image: postgres:15-alpine
@@ -24,8 +22,13 @@ services:
       - POSTGRES_USER=zabbix
       - POSTGRES_PASSWORD=zabbix_sifresi
       - POSTGRES_DB=zabbix
+      - ZBX_EXPORTDIR=/var/lib/zabbix/export
+      - ZBX_EXPORTFILESIZE=10M
+      - ZBX_EXPORTSTEP=15
     ports:
       - "10051:10051"
+    volumes:
+      - ./zabbix-export:/var/lib/zabbix/export
     networks:
       - zabbix-net
     restart: unless-stopped
@@ -91,16 +94,60 @@ services:
     networks:
       - zabbix-net
     restart: unless-stopped
-  airflow-init:
-    image: apache/airflow:2.10.3
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - ./redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
     environment:
-      - _PIP_ADDITIONAL_REQUIREMENTS=pandas boto3 s3fs pyarrow psycopg2-binary
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    environment:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/data/airflow_metadata.db
     volumes:
       - ./dags:/opt/airflow/dags
       - ./ETL:/opt/airflow/ETL
       - ./ml:/opt/airflow/ml
       - ./tools:/opt/airflow/tools
+      - ./realtime:/opt/airflow/realtime
       - ./data:/opt/airflow/data
     networks:
       - zabbix-net
@@ -109,7 +156,9 @@ services:
       airflow users create --username admin --password admin --firstname Airflow --lastname Admin --role Admin --email admin@example.com"
 
   airflow-webserver:
-    image: apache/airflow:2.10.3
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -118,9 +167,10 @@ services:
       minio:
         condition: service_started
     environment:
-      - _PIP_ADDITIONAL_REQUIREMENTS=pandas boto3 s3fs pyarrow psycopg2-binary
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/data/airflow_metadata.db
+      # REST API icin basic auth (FastAPI'nin train tetiklemesi buradan gecer)
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin123
@@ -129,11 +179,14 @@ services:
       - DB_PASSWORD=zabbix_sifresi
       - DB_NAME=zabbix
       - SQLITE_DB_PATH=/opt/airflow/data/zabbix_ml.db
+      - ML_ARCHIVE_DIR=s3://zabbix-processed-data/archive/
+      - ML_RETENTION_DAYS=30
     volumes:
       - ./dags:/opt/airflow/dags
       - ./ETL:/opt/airflow/ETL
       - ./ml:/opt/airflow/ml
       - ./tools:/opt/airflow/tools
+      - ./realtime:/opt/airflow/realtime
       - ./data:/opt/airflow/data
     ports:
       - "8081:8080"
@@ -143,7 +196,9 @@ services:
     restart: unless-stopped
 
   airflow-scheduler:
-    image: apache/airflow:2.10.3
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -152,7 +207,6 @@ services:
       minio:
         condition: service_started
     environment:
-      - _PIP_ADDITIONAL_REQUIREMENTS=pandas boto3 s3fs pyarrow psycopg2-binary
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/data/airflow_metadata.db
       - MINIO_ENDPOINT=http://minio:9000
@@ -163,16 +217,105 @@ services:
       - DB_PASSWORD=zabbix_sifresi
       - DB_NAME=zabbix
       - SQLITE_DB_PATH=/opt/airflow/data/zabbix_ml.db
+      - ML_ARCHIVE_DIR=s3://zabbix-processed-data/archive/
+      - ML_RETENTION_DAYS=30
+      # Agir ML task'lari (retrain ~85sn) scheduler'i blokluyor; heartbeat
+      # timeout'unu yukseltiyoruz yoksa DagFileProcessorManager kill edilip
+      # kosan task failed isaretleniyor.
+      - AIRFLOW__CORE__DAG_FILE_PROCESSOR_TIMEOUT=600
+      - AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD=600
+      - AIRFLOW__SCHEDULER__ORPHANED_TASKS_CHECK_INTERVAL=600
     volumes:
       - ./dags:/opt/airflow/dags
       - ./ETL:/opt/airflow/ETL
       - ./ml:/opt/airflow/ml
       - ./tools:/opt/airflow/tools
+      - ./realtime:/opt/airflow/realtime
       - ./data:/opt/airflow/data
     command: scheduler
     networks:
       - zabbix-net
     restart: unless-stopped
+
+  realtime-tailer:
+    build:
+      context: .
+      dockerfile: Dockerfile.realtime
+    command: >
+      python -m realtime.tailer
+      --export-dir /app/zabbix-export
+      --redis-host redis
+      --checkpoint-db /app/data/realtime.db
+      --metrics-port 8002
+      --interval 5
+    volumes:
+      - ./zabbix-export:/app/zabbix-export:ro
+      - ./data:/app/data
+    ports:
+      - "8002:8002"
+    networks:
+      - zabbix-net
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  realtime-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.realtime
+    environment:
+      - DB_HOST=postgres-server
+      - DB_PORT=5432
+      - DB_USER=zabbix
+      - DB_PASSWORD=zabbix_sifresi
+      - DB_NAME=zabbix
+    command: >
+      python -m realtime.consumer
+      --redis-host redis
+      --db /app/data/realtime.db
+      --metrics-port 8001
+      --interval 1
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8001:8001"
+    networks:
+      - zabbix-net
+    depends_on:
+      - redis
+      - postgres-server
+    restart: unless-stopped
+
+  ml-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      - SQLITE_DB_PATH=/app/data/zabbix_ml.db
+      - REALTIME_DB_PATH=/app/data/realtime.db
+      - ML_MODELS_DIR=/app/data/models
+      - GROUND_TRUTH_FILE=/app/data/ground_truth.jsonl
+      - LOAD_TESTS_DIR=/app/load_tests
+      - AIRFLOW_API_URL=http://airflow-webserver:8080/api/v1
+      - AIRFLOW_USER=admin
+      - AIRFLOW_PASSWORD=admin
+      - REDIS_HOST=redis
+      # Zabbix'e geri bildirim (ops.): dolu ise /feedback/anomaly buraya iletir
+      - ZABBIX_WEBHOOK_URL=
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    networks:
+      - zabbix-net
+    depends_on:
+      - redis
+    restart: unless-stopped
+
 networks:
   zabbix-net:
     driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

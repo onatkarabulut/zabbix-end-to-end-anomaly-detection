@@ -39,6 +39,7 @@ cleanup() {
     pkill -9 iperf3 2>/dev/null
     pkill -9 -f "dd if=/dev/zero" 2>/dev/null
     pkill -9 -f "python3 -c" 2>/dev/null
+    pkill -9 -f "memory_leak_test.py" 2>/dev/null
 
     # Disk testi yarım kaldıysa oluşturulan çöp dosyayı sil
     rm -f zabbix_test_data.img 2>/dev/null
@@ -63,6 +64,27 @@ fi
 trap 'cleanup' SIGINT SIGTERM
 
 # ==========================================
+# TEST ARACI KONTROLÜ
+# Gerekli araç yoksa test BAŞLATILMAZ ve ground truth'e kayıt yazılmaz.
+# ==========================================
+case $TEST_TYPE in
+    cpu)  TOOL="stress-ng" ;;
+    ram)  TOOL="python3" ;;
+    disk) TOOL="dd" ;;
+    net)  TOOL="iperf3" ;;
+    *)    TOOL="" ;;
+esac
+
+if [ -n "$TOOL" ] && ! command -v "$TOOL" >/dev/null 2>&1; then
+    echo "=================================================="
+    echo "[!] HATA: '$TOOL' komutu bulunamadı!"
+    echo "[!] '$TEST_TYPE' testi başlatılamadı, ground truth'e kayıt yazılmadı."
+    echo "[!] Kurulum örneği: sudo pacman -S $TOOL  (veya ilgili paket yöneticisi)"
+    echo "=================================================="
+    exit 1
+fi
+
+# ==========================================
 # TEST BAŞLANGICI
 # ==========================================
 
@@ -78,6 +100,7 @@ echo "=================================================="
 METADATA="{}"
 
 # CASE mantığı ile ilgili testi çalıştır
+TEST_RC=0
 case $TEST_TYPE in
     cpu)
         echo "[*] GÜVENLİ CPU Testi (Spike): 10 dakika boyunca %85 yük uygulanıyor..."
@@ -85,6 +108,7 @@ case $TEST_TYPE in
         # Arka planda çalıştırıp wait ile bekliyoruz ki Ctrl+C anında devralabilsin
         timeout -k 615s 600s stress-ng --cpu 0 --cpu-load 85 --timeout 600s --metrics-brief &
         wait $!
+        TEST_RC=$?
         ;;
 
     ram)
@@ -92,6 +116,7 @@ case $TEST_TYPE in
         RAM_PERCENT="${RAM_PERCENT:-25}" RAM_HOLD_MIN="${RAM_HOLD_MIN:-5}" \
             python3 "$SCRIPT_DIR/memory_leak_test.py" &
         wait $!
+        TEST_RC=$?
         LOGGED_BY_SCRIPT=1
         ;;
 
@@ -100,6 +125,13 @@ case $TEST_TYPE in
         METADATA='{"file": "zabbix_test_data.img", "size_gb": 5}'
         dd if=/dev/zero of=zabbix_test_data.img bs=50M count=100 status=progress &
         wait $!
+        TEST_RC=$?
+        if [ "$TEST_RC" -ne 0 ]; then
+            echo "[!] HATA: Disk testi başarısız oldu (dd çıkış kodu $TEST_RC)."
+            echo "[!] Ground truth'e kayıt YAZILMADI."
+            rm -f zabbix_test_data.img 2>/dev/null
+            exit 1
+        fi
         echo "[*] Zabbix'in disk düşüşünü yakalaması için 5 dakika bekleniyor..."
         sleep 300 &
         wait $!
@@ -111,8 +143,17 @@ case $TEST_TYPE in
         echo "[*] GÜVENLİ Ağ Darboğazı: Localhost üzerinde iperf3 ile 5 dakika yük..."
         METADATA='{"target": "127.0.0.1"}'
         iperf3 -s -D
+        sleep 1
+        if ! pgrep -x iperf3 >/dev/null 2>&1; then
+            echo "=================================================="
+            echo "[!] HATA: iperf3 sunucusu başlatılamadı!"
+            echo "[!] '$TEST_TYPE' testi başlatılamadı, ground truth'e kayıt yazılmadı."
+            echo "=================================================="
+            exit 1
+        fi
         iperf3 -c 127.0.0.1 -t 300 &
         wait $!
+        TEST_RC=$?
         pkill iperf3
         ;;
 
@@ -129,6 +170,24 @@ DURATION=$((END_TS - START_TS))
 
 # Trap bağlantısını kaldır (Temiz kapanış)
 trap - SIGINT SIGTERM
+
+# Süre koruması: test gerçekten koşmadıysa (0/çok kısa süre) kayıt yazma.
+# Başarısız/iptal edilen testlerin 0 süreli bozuk ground truth satırı
+# oluşturmasını engeller.
+if [ "$TEST_RC" -ne 0 ]; then
+    echo "=================================================="
+    echo "[!] UYARI: Test başarısız oldu (çıkış kodu $TEST_RC)."
+    echo "[!] Ground truth'e kayıt YAZILMADI."
+    echo "=================================================="
+    exit 1
+fi
+if [ "$DURATION" -lt 10 ]; then
+    echo "=================================================="
+    echo "[!] UYARI: Test $DURATION saniyede bitti (beklenenden kısa)."
+    echo "[!] Ground truth'e kayıt YAZILMADI. Test aracının düzgün çalıştığından emin olun."
+    echo "=================================================="
+    exit 1
+fi
 
 # Ground truth'e yaz (basarili testler icin)
 if [ -z "${LOGGED_BY_SCRIPT:-}" ]; then

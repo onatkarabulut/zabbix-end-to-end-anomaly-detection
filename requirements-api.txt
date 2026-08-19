@@ -1,0 +1,7 @@
+# FastAPI yonetim/rapor API'si bagimliliklari
+fastapi
+uvicorn[standard]
+pydantic
+requests
+redis
+matplotlib

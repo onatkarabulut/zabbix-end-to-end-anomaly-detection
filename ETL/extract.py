@@ -124,36 +124,70 @@ class ZabbixExtractor:
             logging.error(f"Minio Yukleme Hatasi (Key: {table_category}/{chunk_identifier}): {e}")
             raise
 
+    ACTIVE_ITEMS_CTE = "SELECT itemid FROM items WHERE status = 0"
+
     def extract_history_chunk(self, start_ts, end_ts):
-        query = f"SELECT itemid, clock, value, ns FROM history WHERE clock >= {start_ts} AND clock < {end_ts}"
+        # ORDER BY: LIMIT/OFFSET sayfalamasi deterministik olsun (K1).
+        # itemid kısıtı: pasif itemlarin verisi çekilmez (O1).
+        query = (
+            f"SELECT itemid, clock, value, ns FROM history "
+            f"WHERE clock >= {start_ts} AND clock < {end_ts} "
+            f"AND itemid IN ({self.ACTIVE_ITEMS_CTE}) "
+            f"ORDER BY itemid, clock, ns"
+        )
         return self._execute_query_to_df(query, "history")
 
     def extract_trends_chunk(self, start_ts, end_ts):
-        query = f"SELECT itemid, clock, num, value_min, value_avg, value_max FROM trends WHERE clock >= {start_ts} AND clock < {end_ts}"
+        query = (
+            f"SELECT itemid, clock, num, value_min, value_avg, value_max FROM trends "
+            f"WHERE clock >= {start_ts} AND clock < {end_ts} "
+            f"AND itemid IN ({self.ACTIVE_ITEMS_CTE}) "
+            f"ORDER BY itemid, clock"
+        )
         return self._execute_query_to_df(query, "trends")
 
     def extract_events_chunk(self, start_ts, end_ts):
-        query = f"SELECT eventid, source, object, objectid, clock, ns, value, name, severity FROM events WHERE clock >= {start_ts} AND clock < {end_ts}"
+        query = (
+            f"SELECT eventid, source, object, objectid, clock, ns, value, name, severity "
+            f"FROM events WHERE clock >= {start_ts} AND clock < {end_ts} "
+            f"ORDER BY eventid"
+        )
         return self._execute_query_to_df(query, "events")
 
     def extract_problems_chunk(self, start_ts, end_ts):
-        query = f"SELECT eventid, objectid, clock, r_eventid, r_clock, name, severity FROM problem WHERE clock >= {start_ts} AND clock < {end_ts}"
+        query = (
+            f"SELECT eventid, objectid, clock, r_eventid, r_clock, name, severity "
+            f"FROM problem WHERE clock >= {start_ts} AND clock < {end_ts} "
+            f"ORDER BY eventid"
+        )
         return self._execute_query_to_df(query, "problem")
 
     def extract_hosts(self):
-        query = "SELECT hostid, host, name, status FROM hosts WHERE status IN (0, 1)"
+        query = (
+            "SELECT hostid, host, name, status FROM hosts "
+            "WHERE status IN (0, 1) ORDER BY hostid"
+        )
         return self._execute_query_to_df(query, "hosts")
 
     def extract_items(self):
-        query = "SELECT itemid, hostid, name, key_, value_type, status FROM items WHERE status = 0"
+        query = (
+            "SELECT itemid, hostid, name, key_, value_type, status FROM items "
+            "WHERE status = 0 ORDER BY itemid"
+        )
         return self._execute_query_to_df(query, "items")
 
     def extract_triggers(self):
-        query = "SELECT triggerid, expression, description, priority, status FROM triggers"
+        query = (
+            "SELECT triggerid, expression, description, priority, status FROM triggers "
+            "ORDER BY triggerid"
+        )
         return self._execute_query_to_df(query, "triggers")
 
     def extract_functions(self):
-        query = "SELECT functionid, itemid, triggerid, name, parameter FROM functions"
+        query = (
+            "SELECT functionid, itemid, triggerid, name, parameter FROM functions "
+            "ORDER BY functionid"
+        )
         return self._execute_query_to_df(query, "functions")
 
 

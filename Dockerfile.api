@@ -1,0 +1,15 @@
+# FastAPI yonetim/rapor API imaji.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements-api.txt /app/requirements-api.txt
+RUN pip install --no-cache-dir -r /app/requirements-api.txt
+
+COPY api/ /app/api/
+COPY load_tests/ /app/load_tests/
+
+EXPOSE 8000
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

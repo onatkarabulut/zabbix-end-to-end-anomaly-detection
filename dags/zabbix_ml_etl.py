@@ -6,7 +6,9 @@ from datetime import timedelta
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowException, AirflowSkipException
 
-sys.path.insert(0, '/opt/airflow')
+# AIRFLOW_HOME dis makinelerde override edilebilir (portabilite).
+AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
+sys.path.insert(0, AIRFLOW_HOME)
 
 from ETL.extract import run_extraction_pipeline
 from ETL.transform import run_transform_pipeline
@@ -29,7 +31,7 @@ default_args = {
     dag_id='zabbix_ml_pipeline',
     default_args=default_args,
     schedule='@hourly',
-    start_date=pendulum.datetime(2026, 7, 1, tz="UTC"),
+    start_date=pendulum.datetime(2020, 1, 1, tz="UTC"),
     catchup=False,
     max_active_runs=1,
     tags=['zabbix', 'machine-learning', 'etl', 'faz-2']
@@ -93,7 +95,7 @@ def zabbix_etl_dag():
 
     @task(task_id='feature_engineering')
     def fe_task(chunk_id: str, raw_ok: str):
-        db_path = os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db")
+        db_path = os.getenv("SQLITE_DB_PATH", os.path.join(AIRFLOW_HOME, "data", "zabbix_ml.db"))
         parts = chunk_id.split("_")
         target_start = int(parts[1])
         target_end = int(parts[2])

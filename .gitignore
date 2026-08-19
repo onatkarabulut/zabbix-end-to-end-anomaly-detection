@@ -157,6 +157,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv-test
 env/
 venv/
 ENV/
@@ -169,6 +170,23 @@ data/predictions.csv
 data/comp_vs_zabbix.csv
 data/labels.csv
 data/models/
+
+# Faz 4 - realtime export/checkpoint verileri (realtime kaldirildi, yedekte)
+zabbix-export/
+data/realtime.db
+data/item_key_map.json
+
+# Veritabanlari ve runtime verileri (repo'ya GIRMEZ)
+data/*.db
+data/ground_truth.jsonl
+
+# Servis volume verileri (MinIO / Redis / Postgres / export)
+minio-data/
+redis-data/
+zabbix-pg-data/
+
+# IDE kişisel ayarları
+.vscode/
 
 # Spyder project settings
 .spyderproject

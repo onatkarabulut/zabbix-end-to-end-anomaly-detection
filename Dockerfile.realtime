@@ -1,0 +1,16 @@
+# Realtime katmani (tailer + consumer) imaji.
+# Consumer LSTM skorlamasi icin torch CPU gerektirir.
+FROM python:3.12-slim
+
+# stdout buffering kapatilir; aksi halde `docker logs` bos gorunur
+# (print'ler container icinde tamponda bekler).
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements-realtime.txt /app/requirements-realtime.txt
+RUN pip install --no-cache-dir -r /app/requirements-realtime.txt && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+COPY realtime/ /app/realtime/
+COPY ml/ /app/ml/

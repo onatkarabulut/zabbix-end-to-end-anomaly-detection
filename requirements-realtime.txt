@@ -1,0 +1,11 @@
+# Faz 4 - realtime katmani bagimliliklari
+redis
+prometheus-client
+joblib
+scikit-learn
+# pandas>=3,<4 ve numpy>=2: Airflow imaji ile ayni ABI. pandas 3.0'da
+# groupby().apply() grup kolonunu dusuruyor; realtime kodu buna gore yazildi.
+# Major surum pin'i gelecekteki sessiz davranis degisikliklerini onler.
+pandas>=3,<4
+numpy>=2
+psycopg2-binary

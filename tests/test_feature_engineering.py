@@ -23,7 +23,7 @@ def _build_mini_db(path):
     conn.execute("INSERT INTO items VALUES (1, 1, 'CPU util', 'system.cpu.util', 0, 0)")
     conn.execute("INSERT INTO triggers VALUES (1, 'last(/h1/system.cpu.util)>80', 'High CPU', 2, 0)")
     conn.execute("INSERT INTO functions VALUES (1, 1, 1, 'last', '0')")
-    alarm_clock = int(pd.Timestamp("2026-07-23 12:00:00").timestamp())
+    alarm_clock = int(pd.Timestamp("2026-07-23 12:00:00", tz="UTC").timestamp())
     conn.execute(
         "INSERT INTO events VALUES (1, 0, 0, 1, ?, 0, 1, 'High CPU', 2)",
         (alarm_clock,),

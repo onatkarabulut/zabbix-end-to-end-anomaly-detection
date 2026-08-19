@@ -86,7 +86,7 @@ def rebuild(db_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=os.getenv("SQLITE_DB_PATH", "/opt/airflow/data/zabbix_ml.db"))
+    parser.add_argument("--db", default=os.getenv("SQLITE_DB_PATH", "data/zabbix_ml.db"))
     args = parser.parse_args()
     ok = rebuild(args.db)
     logging.info(f"Rebuild {'BASARILI' if ok else 'BASARISIZ'}: {args.db}")
